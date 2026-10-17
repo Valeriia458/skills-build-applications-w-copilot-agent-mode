@@ -52,3 +52,4 @@ Record the commands you run and what each failure means.
   - This catches TypeScript compile errors and route/service typing issues before the API is considered ready for integration.
 - Frontend build command: `npm run build --prefix octofit-tracker/frontend`
   - This catches frontend compile and bundling issues, including incorrect React/TypeScript usage, invalid route/component shape, and broken imports or type mismatches in the Vite app.
+
