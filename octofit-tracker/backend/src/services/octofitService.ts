@@ -64,16 +64,100 @@ export async function listTeams() {
   return Team.find().lean();
 }
 
-export async function createTeam(_input: unknown) {
-  throw Object.assign(new Error('Team validation is not implemented yet'), { status: 501 });
+export async function createTeam(input: unknown) {
+  const payload = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const { name, mascot, members } = payload;
+
+  if (typeof name !== 'string' || !name.trim()) {
+    const error = new Error('Team name is required.');
+    Object.assign(error, { status: 400 });
+    throw error;
+  }
+
+  if (typeof mascot !== 'string' || !mascot.trim()) {
+    const error = new Error('Team mascot is required.');
+    Object.assign(error, { status: 400 });
+    throw error;
+  }
+
+  const normalizedMembers = Array.isArray(members)
+    ? members.map((member) => {
+        if (typeof member === 'string') {
+          if (!mongoose.Types.ObjectId.isValid(member)) {
+            const error = new Error('Team members must be valid ObjectIds.');
+            Object.assign(error, { status: 400 });
+            throw error;
+          }
+          return new mongoose.Types.ObjectId(member);
+        }
+        if (member && typeof member === 'object' && '_id' in member && member._id && typeof (member as { _id?: unknown })._id === 'string') {
+          return new mongoose.Types.ObjectId((member as { _id: string })._id);
+        }
+        const error = new Error('Team members must be valid ObjectIds.');
+        Object.assign(error, { status: 400 });
+        throw error;
+      })
+    : [];
+
+  const team = await Team.create({
+    name: name.trim(),
+    mascot: mascot.trim(),
+    members: normalizedMembers,
+  });
+
+  return team.toObject ? team.toObject() : team;
 }
 
 export async function getLeaderboard() {
-  return [];
+  const rows = await Activity.aggregate([
+    { $group: { _id: '$team', totalPoints: { $sum: '$points' } } },
+    { $sort: { totalPoints: -1, _id: 1 } },
+    { $lookup: { from: 'teams', localField: '_id', foreignField: '_id', as: 'team' } },
+    { $unwind: '$team' },
+    { $project: { _id: 0, teamName: '$team.name', totalPoints: 1 } },
+  ]);
+
+  return rows.map((row, index) => ({
+    teamName: row.teamName,
+    totalPoints: row.totalPoints,
+    rank: index + 1,
+  }));
 }
 
-export async function suggestWorkouts(_userEmail: string) {
-  return Workout.find().limit(1).lean();
+export async function suggestWorkouts(userEmail: string) {
+  const normalizedEmail = userEmail?.trim();
+  const user = await User.findOne({ email: normalizedEmail }).lean();
+  if (!user) {
+    const error = new Error('User not found.');
+    Object.assign(error, { status: 404 });
+    throw error;
+  }
+
+  const recentActivity = await Activity.find({ user: user._id }).sort({ occurredAt: -1 }).limit(1).lean();
+  const recentType = recentActivity[0]?.type;
+  const preferredFocuses = [user.fitnessGoal, recentType].filter(Boolean) as string[];
+
+  const candidates = await Workout.find({ focus: { $in: preferredFocuses } }).lean();
+  if (candidates.length === 0) {
+    const fallback = await Workout.find().lean();
+    return fallback.map((workout) => ({
+      ...workout,
+      reason: `Recommended based on recent activity patterns for ${user.name ?? user.email}.`,
+    }));
+  }
+
+  const prioritized = [...candidates].sort((a, b) => {
+    const aPriority = preferredFocuses.indexOf(a.focus) === -1 ? Number.MAX_SAFE_INTEGER : preferredFocuses.indexOf(a.focus);
+    const bPriority = preferredFocuses.indexOf(b.focus) === -1 ? Number.MAX_SAFE_INTEGER : preferredFocuses.indexOf(b.focus);
+    return aPriority - bPriority;
+  });
+
+  return prioritized.map((workout) => ({
+    ...workout,
+    reason: user.fitnessGoal && workout.focus === user.fitnessGoal
+      ? `Matches your ${user.fitnessGoal} goal and recent activity patterns.`
+      : `Builds on your recent ${recentType ?? 'activity'} pattern.`,
+  }));
 }
 
 export { User };
